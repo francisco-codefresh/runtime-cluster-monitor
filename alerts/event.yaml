@@ -43,3 +43,67 @@
     message: "Spot instance {{ $labels.node }} is going down - cordon node"
     handler: cordon-node {{ $labels.node }}
     summary: Spot termination - cordon node
+
+- alert: DindPodSpotTermination
+  annotations:
+    message: |
+      Dind pod can be interrupted because the relevant spot instance is marked for termination
+      Pod {{ $labels.pod }}
+      Account {{ $labels.label_io_codefresh_accountName }}
+      Runtime {{ $labels.label_runtime_env }}
+      Pipeline {{ $labels.label_io_codefresh_pipelineId }}
+      Node {{ $labels.node }}
+      Instance ID {{ $labels.instance_id }}
+    summary: Dind pod can be interrupted
+  expr: |
+    (
+      sum by (node, pod, instance_id)
+      (
+        kube_pod_info {pod =~ "dind-[0-9].*"}
+        * on (node)
+        group_left(instance_id)
+        aws_instance_termination_imminent
+      ) == 1
+    )
+    * on (pod)
+    group_left(label_io_codefresh_accountName, label_io_codefresh_pipelineId, label_runtime_env)
+    kube_pod_labels {pod =~ "dind-[0-9].*"}
+  labels:
+    alertgroup: dind_problem
+    severity: warning
+
+- alert: DindPodFailedBecauseOfSpotInstance
+  annotations:
+    message: |
+      Dind pod was killed because the relevant spot instance was interrupted
+      Pod {{ $labels.pod }}
+      Account {{ $labels.io_codefresh_accountName }}
+      Runtime {{ $labels.runtime_env }}
+      Pipeline {{ $labels.io_codefresh_pipelineId }}
+      Node {{ $labels.node }}
+    summary: Dind pod is killed because of spot instance
+  expr: |
+
+    (
+      # add pod="dind-..."  label
+      label_replace(
+        workflow_status == 2,
+        "pod",
+        "dind-$1",
+        "io_codefresh_processId",
+        "(.*)"
+      )
+      # add 'node' labels
+      * on(pod)
+      group_left(node)
+      # as 'dind' container is killed before 'workflow_status' shows 2
+      (sum without(pod_ip, host_ip) (max_over_time(kube_pod_info{pod =~ "dind-[0-9].*", node != ""}[15m])))*0
+    )
+    *on(node)
+    group_left()
+    # as node is terminated before 'workflow_status' shows 2
+    sum without(spotinst_status)  (max_over_time(aws_instance_termination_imminent[15m])== 1 )
+  labels:
+    alertgroup: dind_problem
+    severity: warning
+
